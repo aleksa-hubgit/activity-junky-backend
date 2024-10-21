@@ -1,0 +1,294 @@
+services:
+  tokens:
+    image: aleksastevas/auth-database:latest
+    container_name: tokens
+    environment:
+      - POSTGRES_DB=token
+      - POSTGRES_USER=token
+      - POSTGRES_PASSWORD=token
+    volumes:
+      - "token-data:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  auth-service:
+    mem_limit: 128m
+    image: aleksastevas/auth-service:latest
+    container_name: auth-service
+    ports:
+      - 8081:8080
+    environment:
+      - DATABASE_HOSTNAME=tokens
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=token
+      - DATABASE_USERNAME=token
+      - DATABASE_PASSWORD=token
+      - SECRET_KEY=09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+    depends_on:
+      tokens:
+        condition: service_healthy
+    restart: always
+
+  users:
+    image: aleksastevas/user-database:latest
+    container_name: users
+    environment:
+      - POSTGRES_DB=user
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=user
+    volumes:
+      - "user-data:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  user-service:
+    mem_limit: 128m
+    image: aleksastevas/user-service:latest
+    container_name: user-service
+    ports:
+      - 8082:8080
+    environment:
+      - DATABASE_HOSTNAME=users
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=user
+      - DATABASE_USERNAME=user
+      - DATABASE_PASSWORD=user
+      - SECRET_KEY=09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7
+      - ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - RABBITMQ_HOSTNAME=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USERNAME=user
+      - RABBITMQ_PASSWORD=password
+    build:
+      context: ./user-service
+      dockerfile: Dockerfile
+    depends_on:
+      users:
+        condition: service_healthy
+    restart: always
+
+  # frontend:
+  #   image: aleksastevas/frontend:latest
+  #   container_name: frontend
+  #   ports:
+  #     - 3001:3000
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   restart: always
+  #   command: npm run dev
+
+  api-gateway:
+    mem_limit: 128m
+    image: aleksastevas/api-gateway:latest
+    container_name: api-gateway
+    ports:
+      - 8080:8080
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:8080
+      - USER_SERVICE_URL=http://user-service:8080
+      - ACTIVITY_SERVICE_URL=http://activity-service:8000
+      - REVIEW_SERVICE_URL=http://review-service:8000
+      - RESERVATION_SERVICE_URL=http://reservation-service:8000
+      - SUBSCRIPTION_SERVICE_URL=http://subscription-service:8000
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    depends_on: [auth-service, user-service]
+    restart: always
+    command: ./api-gateway
+
+  activities:
+    image: postgres:17.0-alpine
+    container_name: activities
+    environment:
+      - POSTGRES_DB=activity
+      - POSTGRES_USER=activity
+      - POSTGRES_PASSWORD=activity
+    volumes:
+      - "activity-data:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  activity-service:
+    mem_limit: 128m
+    image: aleksastevas/activity-service:latest
+    container_name: activity-service
+    ports:
+      - 8083:8000
+    environment:
+      - DATABASE_HOSTNAME=activities
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=activity
+      - DATABASE_USERNAME=activity
+      - DATABASE_PASSWORD=activity
+      - RABBITMQ_HOSTNAME=rabbitmq
+      - RABBITMQ_USERNAME=user
+      - RABBITMQ_PASSWORD=password
+    depends_on:
+      activities:
+        condition: service_healthy
+    restart: always
+    command: sh -c  "python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  reviews:
+    image: postgres:17.0-alpine
+    container_name: reviews
+    environment:
+      - POSTGRES_DB=review
+      - POSTGRES_USER=review
+      - POSTGRES_PASSWORD=review
+    volumes:
+      - "review-data:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  review-service:
+    mem_limit: 128m
+    image: aleksastevas/review-service:latest
+    container_name: review-service
+    ports:
+      - 8084:8000
+    environment:
+      - DATABASE_HOSTNAME=reviews
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=review
+      - DATABASE_USERNAME=review
+      - DATABASE_PASSWORD=review
+    depends_on:
+      reviews:
+        condition: service_healthy
+    restart: always
+    command: sh -c  "python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: rabbitmq
+    ports:
+      - 5672:5672
+      - 15672:15672
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: user
+      RABBITMQ_DEFAULT_PASS: password
+      RABBITMQ_NODENAME: rabbit@localhost
+      RABBITMQ_ERLANG_COOKIE: randomcookievalue
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  reservation-service:
+    mem_limit: 128m
+    image: aleksastevas/reservation-service:latest
+    container_name: reservation-service
+    ports:
+      - 8085:8000
+    environment:
+      - DATABASE_HOSTNAME=reservations
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=reservation
+      - DATABASE_USERNAME=reservation
+      - DATABASE_PASSWORD=reservation
+      - RABBITMQ_HOSTNAME=rabbitmq
+      - RABBITMQ_USERNAME=user
+      - RABBITMQ_PASSWORD=password
+    depends_on:
+      reservations:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: always
+    command: sh -c  "python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  reservations:
+    image: postgres:17.0-alpine
+    container_name: reservations
+    environment:
+      - POSTGRES_DB=reservation
+      - POSTGRES_USER=reservation
+      - POSTGRES_PASSWORD=reservation
+    volumes:
+      - "reservation-data:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  subscription-service:
+    mem_limit: 128m
+    image: aleksastevas/subscription-service:latest
+    container_name: subscription-service
+    ports:
+      - 8086:8000
+    environment:
+      - DATABASE_HOSTNAME=subscriptions
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=subscription
+      - DATABASE_USERNAME=subscription
+      - DATABASE_PASSWORD=subscription
+      - RABBITMQ_HOSTNAME=rabbitmq
+      - RABBITMQ_USERNAME=user
+      - RABBITMQ_PASSWORD=password
+    depends_on:
+      subscriptions:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: always
+    command: sh -c  "python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+
+  subscriptions:
+    image: postgres:17.0-alpine
+    container_name: subscriptions
+    environment:
+      - POSTGRES_DB=subscription
+      - POSTGRES_USER=subscription
+      - POSTGRES_PASSWORD=subscription
+    volumes:
+      - "subscription-data:/var/lib/postgresql/data"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+volumes:
+  token-data:
+  user-data:
+  activity-data:
+  review-data:
+  rabbitmq_data:
+  reservation-data:
+  subscription-data:
